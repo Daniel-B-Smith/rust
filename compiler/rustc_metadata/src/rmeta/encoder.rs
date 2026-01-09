@@ -42,7 +42,7 @@ use crate::errors::{FailCreateFileEncoder, FailWriteFile};
 use crate::rmeta::*;
 
 // Struct to enable split borrows.
-struct ContextEncoder<'a> {
+pub(super) struct ContextEncoder<'a> {
     opaque: opaque::FileEncoder,
     stable_hasher: StableHasher,
     hcx: StableHashingContext<'a>,
@@ -120,8 +120,12 @@ impl<'a> Encoder for ContextEncoder<'a> {
 
 impl<'a> ContextEncoder<'a> {
     #[inline]
-    fn position(&self) -> usize {
+    pub(super) fn position(&self) -> usize {
         self.opaque.position()
+    }
+
+    pub(super) fn write_with<const N: usize>(&mut self, _: impl FnOnce(&mut [u8; N]) -> usize) {
+        unimplemented!();
     }
 }
 
@@ -194,11 +198,6 @@ impl<'a, 'tcx> SpanEncoder for EncodeContext<'a, 'tcx> {
     }
 
     fn encode_def_id(&mut self, def_id: DefId) {
-        HashStable::<StableHashingContext<'_>>::hash_stable(
-            &def_id,
-            &mut self.encoder.hcx,
-            &mut self.encoder.stable_hasher,
-        );
         def_id.krate.encode(self);
         def_id.index.encode(self);
     }
@@ -235,6 +234,7 @@ impl<'a, 'tcx> SpanEncoder for EncodeContext<'a, 'tcx> {
                         *dest = offset.to_le_bytes();
                         needed
                     });
+                    offset.hash_stable(&mut self.encoder.hcx, &mut self.encoder.stable_hasher);
                 } else {
                     let needed = bytes_needed(last_location);
                     SpanTag::indirect(false, needed as u8).encode(self);
@@ -242,6 +242,8 @@ impl<'a, 'tcx> SpanEncoder for EncodeContext<'a, 'tcx> {
                         *dest = last_location.to_le_bytes();
                         needed
                     });
+                    last_location
+                        .hash_stable(&mut self.encoder.hcx, &mut self.encoder.stable_hasher);
                 }
             }
             Entry::Vacant(v) => {
@@ -648,7 +650,7 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             adapted.set_some(on_disk_index, self.lazy(adapted_source_file));
         }
 
-        adapted.encode(&mut self.encoder.opaque)
+        adapted.encode(&mut self.encoder)
     }
 
     fn encode_crate_root(&mut self) -> LazyValue<CrateRoot> {
@@ -732,7 +734,7 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
         // encode_def_path_table.
         let proc_macro_data = stat!("proc-macro-data", || self.encode_proc_macros());
 
-        let tables = stat!("tables", || self.tables.encode(&mut self.encoder.opaque));
+        let tables = stat!("tables", || self.tables.encode(&mut self.encoder));
 
         let debugger_visualizers =
             stat!("debugger-visualizers", || self.encode_debugger_visualizers());
@@ -2016,9 +2018,9 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
         );
 
         (
-            syntax_contexts.encode(&mut self.encoder.opaque),
-            expn_data_table.encode(&mut self.encoder.opaque),
-            expn_hash_table.encode(&mut self.encoder.opaque),
+            syntax_contexts.encode(&mut self.encoder),
+            expn_data_table.encode(&mut self.encoder),
+            expn_hash_table.encode(&mut self.encoder),
         )
     }
 
