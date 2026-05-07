@@ -45,11 +45,6 @@ use rustc_attr_parsing::{AttributeParser, OmitDoc, Recovery, ShouldEmit};
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxIndexSet;
 use rustc_data_structures::sorted_map::SortedMap;
-use rustc_data_structures::stable_hasher::{StableHash, StableHasher};
-use rustc_data_structures::steal::Steal;
-use rustc_data_structures::tagged_ptr::TaggedRef;
-use rustc_errors::{DiagArgFromDisplay, DiagCtxtHandle};
-use rustc_hir::def::{DefKind, LifetimeRes, Namespace, PartialRes, PerNS, Res};
 use rustc_hir::def_id::{CRATE_DEF_ID, LOCAL_CRATE, LocalDefId};
 use rustc_hir::definitions::PerParentDisambiguatorState;
 use rustc_hir::lints::DelayedLint;
@@ -506,25 +501,15 @@ fn index_crate<'a, 'b>(
 
 /// Compute the hash for the HIR of the full crate.
 /// This hash will then be part of the crate_hash which is stored in the metadata.
-fn compute_hir_hash(
-    tcx: TyCtxt<'_>,
-    owners: &IndexSlice<LocalDefId, hir::MaybeOwner<'_>>,
-) -> Fingerprint {
-    let mut hir_body_nodes: Vec<_> = owners
+fn compute_hir_hash(owners: &IndexSlice<LocalDefId, hir::MaybeOwner<'_>>) -> Fingerprint {
+    owners
         .iter_enumerated()
-        .filter_map(|(def_id, info)| {
+        .filter_map(|(_, info)| {
             let info = info.as_owner()?;
-            let def_path_hash = tcx.hir_def_path_hash(def_id);
-            Some((def_path_hash, info))
+            Some(info.fingerprint())
         })
-        .collect();
-    hir_body_nodes.sort_unstable_by_key(|bn| bn.0);
-
-    tcx.with_stable_hashing_context(|mut hcx| {
-        let mut stable_hasher = StableHasher::new();
-        hir_body_nodes.stable_hash(&mut hcx, &mut stable_hasher);
-        stable_hasher.finish()
-    })
+        .reduce(Fingerprint::combine_commutative)
+        .expect("HIR hash requested without any content")
 }
 
 pub fn lower_to_hir(tcx: TyCtxt<'_>, (): ()) -> mid_hir::Crate<'_> {
@@ -561,8 +546,7 @@ pub fn lower_to_hir(tcx: TyCtxt<'_>, (): ()) -> mid_hir::Crate<'_> {
     }
 
     // Don't hash unless necessary, because it's expensive.
-    let opt_hir_hash =
-        if tcx.needs_hir_hash() { Some(compute_hir_hash(tcx, &owners)) } else { None };
+    let opt_hir_hash = if tcx.needs_hir_hash() { Some(compute_hir_hash(&owners)) } else { None };
 
     let delayed_resolver = Steal::new((resolver, krate));
     mid_hir::Crate::new(owners, delayed_ids, delayed_resolver, opt_hir_hash)
